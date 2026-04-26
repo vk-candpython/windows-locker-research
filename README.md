@@ -1,4 +1,4 @@
-# 🔒 windows-locker-research 
+# 🔒 windows-locker-research
 
 
 <div align="center">
@@ -116,6 +116,8 @@ Enter password to unlock it
 #
 ```
 
+**What it configures:** The lock screen password (SHA-256 hash) that must be entered to unlock the system, toggle for optional file encryption, and the ASCII art message displayed on the lock screen.
+
 </details>
 
 ---
@@ -204,6 +206,8 @@ WHITELIST = {
     'winlogon.exe'   
 }
 ```
+
+**What it initializes:** Imports all required modules (Tkinter for GUI, psutil for process killing, mmap for file encryption, keyboard for input blocking), validates platform is Windows, enforces .exe compilation, sets up system paths, derives encryption key from password via SHA-256, builds encryption path list for all drives, and defines the process whitelist for the watchdog.
 
 </details>
 
@@ -550,6 +554,10 @@ COLOR = {'bg': 'black', 'fg': 'white'}
 FONT = ('Courier', 15, 'bold')
 ```
 
+**What it disables via registry:** Windows Defender (antivirus, real-time protection, behavior monitoring, cloud protection), Windows Update, System Restore, Windows RE recovery, Safe Mode, SmartScreen, Lock Screen, Ctrl+Alt+Del, Task Manager access, Control Panel, Run dialog, all drive visibility, notification center, Windows hotkeys, Sticky Keys/Ease of Access, and **blocks 35+ system tools** (cmd.exe, powershell.exe, regedit.exe, taskmgr.exe, bcdedit.exe, diskpart.exe, etc.) via Image File Execution Options Debugger hijack.
+
+**Services disabled:** Windows Update (wuauserv, UsoSvc), Windows Defender (WinDefend, WdFilter, WdNisSvc), Windows Search, Diagnostic services, Error Reporting, Remote Desktop, Remote Registry, Bluetooth, WiFi, USB, Audio, Print Spooler, Windows Event Log.
+
 </details>
 
 ---
@@ -637,6 +645,13 @@ def disable_services():
         })
 ```
 
+**What it does:**
+- **cmd()** — Silent command execution returning exit codes (used for bcdedit, shutdown, reagentc, vssadmin)
+- **reg_set()** — Creates/modifies registry values with automatic DWORD/SZ type detection
+- **reg_del()** — Deletes registry values (used for recovery during destroy)
+- **get_services()** — Enumerates all non-system32 services (third-party applications) by reading ImagePath
+- **disable_services()** — Sets all third-party services to Start=4 (Disabled) to prevent any non-Microsoft service from running
+
 </details>
 
 ---
@@ -654,6 +669,8 @@ def get_admin():
     windll.shell32.ShellExecuteW(None, 'runas', __file__, None, None, 0)
     os._exit(0)
 ```
+
+**What it does:** Checks if running as administrator via IsUserAnAdmin(). If not, triggers UAC elevation prompt via ShellExecuteW with 'runas' verb, then exits the non-elevated process. Administrator privileges are required for registry modifications, service control, and BCD changes.
 
 </details>
 
@@ -724,6 +741,10 @@ def encrypt(root_path, tkroot, label):
                 continue
 ```
 
+**What it encrypts:** All user files across all drives (up to 128MB per file) using XOR encryption with a SHA-256 keystream derived from the lock screen password. Files are marked with an 8-byte signature to prevent double encryption. Process: take ownership → grant Everyone full control → strip attributes → XOR encrypt via memory-mapped I/O. The GUI updates in real-time showing each file's encryption status.
+
+**Encryption algorithm:** CTR-mode XOR stream cipher with SHA-256 — each block generates a new keystream from (key + nonce + counter), making it impossible to decrypt without the password.
+
 </details>
 
 ---
@@ -762,6 +783,17 @@ def destroy():
     cmd(['shutdown', '/f', '/t', '0', '/r'])
     os._exit(0)
 ```
+
+**What it does when correct password is entered:**
+1. Creates a RunOnce entry to delete the winlocker folder on next boot
+2. Deletes the winlocker directory immediately
+3. Restores Userinit, Shell, and EnableLUA to default values
+4. Re-enables all critical services (sets Start back to 2)
+5. Removes all lockdown registry entries (IFEO blocks, policies, restrictions)
+6. If encryption was enabled, creates a ransom-style note at C:\requirement.txt with the password prompt message
+7. Force reboots the system
+
+**Result:** System returns to normal state — Explorer loads, tools are unblocked, services restart, and the locker is completely removed.
 
 </details>
 
@@ -878,6 +910,22 @@ def window():
     root.mainloop()
 ```
 
+**What it presents:** A fullscreen, borderless, always-on-top Tkinter window with black background and white Courier text — displays ASCII art lock message and a password entry field. Cannot be closed, minimized, or Alt+Tabbed away from.
+
+**Anti-escape measures:**
+- `overrideredirect(True)` — removes window borders and title bar
+- `attributes('-fullscreen', True)` — covers entire screen
+- `attributes('-topmost', True)` — stays above all other windows
+- `grab_set_global()` — captures all input events globally
+- `keep_focus()` — runs every 100ms to re-capture focus if lost
+- `WM_DELETE_WINDOW` protocol suppressed — cannot close via X button
+
+**Keyboard blocking:** Blocks all function keys, Windows keys, Print Screen, Caps Lock, Num Lock, and suppresses Alt+F4, Ctrl+Alt+Del, Ctrl+Shift+Esc, Alt+Tab, Win+R, Win+D, Win+E, Win+L, and Win+X.
+
+**Wrong password:** Clears the entry field and disables input for 3 seconds before allowing another attempt.
+
+**If encryption enabled:** Shows a live status label updating in real-time as files are encrypted across all drives in a background thread.
+
 </details>
 
 ---
@@ -901,6 +949,8 @@ def watchdog():
 
         sleep(1)
 ```
+
+**What it kills:** Every second, iterates all running processes and terminates any not in the whitelist — effectively kills Explorer, browsers, antivirus, task manager, command prompts, and any other user-launched application. Only 15 critical system processes are allowed to run.
 
 </details>
 
@@ -981,6 +1031,24 @@ def setup():
     os._exit(0)
 ```
 
+**What it sets up on first run:**
+1. Creates hidden directory at `C:\Windows\System32\winlocker` (System attribute, hidden)
+2. Copies itself to that directory as `winlocker.exe`
+3. Sets `Userinit` to launch winlocker.exe instead of userinit.exe
+4. Empties `Shell` value — no Explorer desktop loads
+5. Disables UAC via `EnableLUA=0`
+6. Applies all 80+ registry lockdown entries
+7. Disables all non-system32 services and critical Microsoft services
+8. Configures BCD — disables boot menu, Advanced Options (F8), Safe Mode, recovery, debugging, EMS, PXE boot, memory diagnostics
+9. Deletes SafeBoot registry key
+10. Deletes Volume Shadow Copies
+11. Disables Windows Recovery Environment
+12. Releases DHCP IP address
+13. Creates flag file to indicate setup is complete
+14. Force reboots the system
+
+**After reboot:** System boots directly to the winlocker GUI — no Explorer, no desktop, no taskbar, no Ctrl+Alt+Del menu.
+
 </details>
 
 ---
@@ -1025,6 +1093,10 @@ def main():
     
 if __name__ == '__main__': main()
 ```
+
+**What it does:**
+- **init()** — Validates configuration, detects debugger (exits with input blocked if found), escalates to admin, then branches: if flag file doesn't exist → blocks input and runs setup (first boot); if flag file exists → starts watchdog killer thread, hides cursor, hooks all keyboard shortcuts, launches lock screen GUI.
+- **main()** — Runs init() then loops the GUI window infinitely — if it crashes or is killed, it restarts after 100ms.
 
 </details>
 
